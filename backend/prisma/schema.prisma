@@ -1,0 +1,120 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   String    @id @default(uuid())
+  name                 String
+  email                String    @unique
+  passwordHash         String
+  role                 String    @default("member") // admin | member
+  tier                 String    @default("starter") // starter | member | vip
+  status               String    @default("active") // active | inactive | cancelled
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  bio                  String?
+  avatarUrl            String?
+  joinedAt             DateTime  @default(now())
+  lastLoginAt          DateTime?
+
+  analytics     Analytics[]
+  notifications Notification[]
+  products      Product[]      @relation("CreatedBy")
+  liveSessions  LiveSession[]  @relation("LiveCreatedBy")
+
+  @@map("users")
+}
+
+model Product {
+  id           String    @id @default(uuid())
+  title        String
+  description  String?
+  type         String    // video | pdf | tool | live
+  tierAccess   String    @default("starter") // free | starter | member | vip
+  fileUrl      String?
+  thumbnailUrl String?
+  emoji        String?
+  duration     String?
+  viewCount    Int       @default(0)
+  downloadCount Int     @default(0)
+  published    Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  createdBy   String
+  creator     User      @relation("CreatedBy", fields: [createdBy], references: [id])
+  analytics   Analytics[]
+
+  @@map("products")
+}
+
+model LiveSession {
+  id           String    @id @default(uuid())
+  title        String
+  description  String?
+  tierAccess   String    @default("starter") // free | starter | member | vip
+  status       String    @default("scheduled") // scheduled | live | ended
+  recordingUrl String?
+  viewerCount  Int       @default(0)
+  scheduledAt  DateTime?
+  startedAt    DateTime?
+  endedAt      DateTime?
+  createdAt    DateTime  @default(now())
+
+  createdBy    String
+  creator      User      @relation("LiveCreatedBy", fields: [createdBy], references: [id])
+
+  @@map("live_sessions")
+}
+
+model Analytics {
+  id        String   @id @default(uuid())
+  eventType String   // view | download | login | signup
+  createdAt DateTime @default(now())
+
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+
+  @@map("analytics")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  message   String
+  type      String   @default("info") // info | success | warning | error
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("notifications")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("password_reset_tokens")
+}
