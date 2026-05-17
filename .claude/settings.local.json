@@ -6,7 +6,10 @@
       "Bash(npx prisma *)",
       "Bash(node *)",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\manuw\\\\creator-core\\\\backend\" -Recurse | Where-Object { $_.PSIsContainer } | Select-Object FullName)",
-      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\manuw\\\\creator-core\\\\frontend\" -Recurse | Where-Object { $_.PSIsContainer } | Select-Object FullName)"
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\manuw\\\\creator-core\\\\frontend\" -Recurse | Where-Object { $_.PSIsContainer } | Select-Object FullName)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }
