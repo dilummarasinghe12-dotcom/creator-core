@@ -41,6 +41,28 @@ app.use('/api/stripe', require('./routes/stripe.routes'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
+app.post('/api/setup', async (req, res) => {
+  try {
+    const db = require('./db');
+    const bcrypt = require('bcryptjs');
+    const { v4: uuidv4 } = require('uuid');
+
+    const existing = db.prepare(`SELECT id FROM users WHERE role = 'admin'`).get();
+    if (existing) return res.status(409).json({ error: 'Setup already completed. Admin account already exists.' });
+
+    const passwordHash = await bcrypt.hash('Admin1234!', 12);
+    db.prepare(
+      `INSERT INTO users (id, name, email, passwordHash, role, tier, status, joinedAt)
+       VALUES (?, 'Creator Core Admin', 'admin@creatorcore.io', ?, 'admin', 'vip', 'active', datetime('now'))`
+    ).run(uuidv4(), passwordHash);
+
+    res.json({ message: 'Admin account created. Email: admin@creatorcore.io — change the password immediately after login.' });
+  } catch (err) {
+    console.error('setup error:', err);
+    res.status(500).json({ error: 'Setup failed' });
+  }
+});
+
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
