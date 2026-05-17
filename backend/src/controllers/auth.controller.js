@@ -1,10 +1,9 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
-const { PrismaClient } = require('@prisma/client');
+const { v4: uuidv4 } = require('uuid');
+const db = require('../db');
 const { signAccess, signRefresh, verifyRefresh } = require('../utils/jwt');
 const { sendEmail, passwordResetEmail, welcomeEmail } = require('../utils/email');
-
-const prisma = new PrismaClient();
 
 const register = async (req, res) => {
   try {
@@ -12,41 +11,41 @@ const register = async (req, res) => {
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email and password are required' });
     }
-    const existing = await prisma.user.findUnique({ where: { email } });
+
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
     if (existing) return res.status(409).json({ error: 'Email already registered' });
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const user = await prisma.user.create({
-      data: { name, email, passwordHash, tier, role: 'member' },
-    });
+    const userId = uuidv4();
+    const now = new Date().toISOString();
 
-    await prisma.analytics.create({ data: { eventType: 'signup', userId: user.id } });
-    await prisma.notification.create({
-      data: {
-        userId: user.id,
-        message: `Welcome to Creator Core! Your ${tier} membership is active.`,
-        type: 'success',
-      },
-    });
+    db.prepare(
+      `INSERT INTO users (id, name, email, passwordHash, tier, role, joinedAt) VALUES (?, ?, ?, ?, ?, 'member', ?)`
+    ).run(userId, name, email, passwordHash, tier, now);
+
+    db.prepare(
+      `INSERT INTO analytics (id, eventType, userId, createdAt) VALUES (?, 'signup', ?, ?)`
+    ).run(uuidv4(), userId, now);
+
+    db.prepare(
+      `INSERT INTO notifications (id, userId, message, type, createdAt) VALUES (?, ?, ?, 'success', ?)`
+    ).run(uuidv4(), userId, `Welcome to Creator Core! Your ${tier} membership is active.`, now);
+
+    const accessToken = signAccess({ id: userId, role: 'member', tier });
+    const refreshToken = signRefresh({ id: userId });
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare(
+      `INSERT INTO refresh_tokens (id, token, userId, expiresAt, createdAt) VALUES (?, ?, ?, ?, ?)`
+    ).run(uuidv4(), refreshToken, userId, expiresAt, now);
 
     try {
       await sendEmail({ to: email, subject: 'Welcome to Creator Core', html: welcomeEmail(name, tier) });
     } catch {}
 
-    const accessToken = signAccess({ id: user.id, role: user.role, tier: user.tier });
-    const refreshToken = signRefresh({ id: user.id });
-    await prisma.refreshToken.create({
-      data: {
-        token: refreshToken,
-        userId: user.id,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
-    });
-
     res.status(201).json({
       accessToken,
       refreshToken,
-      user: { id: user.id, name: user.name, email: user.email, role: user.role, tier: user.tier },
+      user: { id: userId, name, email, role: 'member', tier },
     });
   } catch (err) {
     console.error('register error:', err);
@@ -59,7 +58,7 @@ const login = async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
     const valid = await bcrypt.compare(password, user.passwordHash);
@@ -69,18 +68,18 @@ const login = async (req, res) => {
       return res.status(403).json({ error: 'Your membership has been cancelled' });
     }
 
-    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-    await prisma.analytics.create({ data: { eventType: 'login', userId: user.id } });
+    const now = new Date().toISOString();
+    db.prepare('UPDATE users SET lastLoginAt = ? WHERE id = ?').run(now, user.id);
+    db.prepare(
+      `INSERT INTO analytics (id, eventType, userId, createdAt) VALUES (?, 'login', ?, ?)`
+    ).run(uuidv4(), user.id, now);
 
     const accessToken = signAccess({ id: user.id, role: user.role, tier: user.tier });
     const refreshToken = signRefresh({ id: user.id });
-    await prisma.refreshToken.create({
-      data: {
-        token: refreshToken,
-        userId: user.id,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
-    });
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare(
+      `INSERT INTO refresh_tokens (id, token, userId, expiresAt, createdAt) VALUES (?, ?, ?, ?, ?)`
+    ).run(uuidv4(), refreshToken, user.id, expiresAt, now);
 
     res.json({
       accessToken,
@@ -93,33 +92,37 @@ const login = async (req, res) => {
   }
 };
 
-const refresh = async (req, res) => {
+const refresh = (req, res) => {
   try {
     const { refreshToken } = req.body;
     if (!refreshToken) return res.status(400).json({ error: 'Refresh token required' });
 
-    const stored = await prisma.refreshToken.findUnique({ where: { token: refreshToken } });
-    if (!stored || stored.expiresAt < new Date()) {
+    const stored = db.prepare('SELECT * FROM refresh_tokens WHERE token = ?').get(refreshToken);
+    if (!stored || new Date(stored.expiresAt) < new Date()) {
       return res.status(401).json({ error: 'Invalid or expired refresh token' });
     }
 
-    const payload = verifyRefresh(refreshToken);
-    const user = await prisma.user.findUnique({ where: { id: payload.id } });
+    let payload;
+    try {
+      payload = verifyRefresh(refreshToken);
+    } catch {
+      return res.status(401).json({ error: 'Invalid refresh token' });
+    }
+
+    const user = db.prepare('SELECT id, role, tier FROM users WHERE id = ?').get(payload.id);
     if (!user) return res.status(401).json({ error: 'User not found' });
 
-    const newAccess = signAccess({ id: user.id, role: user.role, tier: user.tier });
-    res.json({ accessToken: newAccess });
+    const accessToken = signAccess({ id: user.id, role: user.role, tier: user.tier });
+    res.json({ accessToken });
   } catch {
     res.status(401).json({ error: 'Invalid refresh token' });
   }
 };
 
-const logout = async (req, res) => {
+const logout = (req, res) => {
   try {
     const { refreshToken } = req.body;
-    if (refreshToken) {
-      await prisma.refreshToken.deleteMany({ where: { token: refreshToken } });
-    }
+    if (refreshToken) db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
     res.json({ message: 'Logged out' });
   } catch {
     res.status(500).json({ error: 'Logout failed' });
@@ -129,18 +132,15 @@ const logout = async (req, res) => {
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    const user = await prisma.user.findUnique({ where: { email } });
-    // Always return success to avoid user enumeration
+    const user = db.prepare('SELECT id, name FROM users WHERE email = ?').get(email);
     if (!user) return res.json({ message: 'If that email exists, a reset link was sent' });
 
     const token = crypto.randomBytes(32).toString('hex');
-    await prisma.passwordResetToken.create({
-      data: {
-        token,
-        userId: user.id,
-        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-      },
-    });
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO password_reset_tokens (id, token, userId, expiresAt, createdAt) VALUES (?, ?, ?, ?, ?)`
+    ).run(uuidv4(), token, user.id, expiresAt, now);
 
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
     await sendEmail({ to: email, subject: 'Reset your Creator Core password', html: passwordResetEmail(user.name, resetUrl) });
@@ -157,15 +157,15 @@ const resetPassword = async (req, res) => {
     const { token, password } = req.body;
     if (!token || !password) return res.status(400).json({ error: 'Token and password required' });
 
-    const record = await prisma.passwordResetToken.findUnique({ where: { token } });
-    if (!record || record.used || record.expiresAt < new Date()) {
+    const record = db.prepare('SELECT * FROM password_reset_tokens WHERE token = ?').get(token);
+    if (!record || record.used || new Date(record.expiresAt) < new Date()) {
       return res.status(400).json({ error: 'Invalid or expired reset token' });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    await prisma.user.update({ where: { id: record.userId }, data: { passwordHash } });
-    await prisma.passwordResetToken.update({ where: { token }, data: { used: true } });
-    await prisma.refreshToken.deleteMany({ where: { userId: record.userId } });
+    db.prepare('UPDATE users SET passwordHash = ? WHERE id = ?').run(passwordHash, record.userId);
+    db.prepare('UPDATE password_reset_tokens SET used = 1 WHERE token = ?').run(token);
+    db.prepare('DELETE FROM refresh_tokens WHERE userId = ?').run(record.userId);
 
     res.json({ message: 'Password reset successfully' });
   } catch (err) {
@@ -174,12 +174,11 @@ const resetPassword = async (req, res) => {
   }
 };
 
-const getMe = async (req, res) => {
+const getMe = (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      select: { id: true, name: true, email: true, role: true, tier: true, status: true, bio: true, avatarUrl: true, joinedAt: true, lastLoginAt: true },
-    });
+    const user = db.prepare(
+      'SELECT id, name, email, role, tier, status, bio, avatarUrl, joinedAt, lastLoginAt FROM users WHERE id = ?'
+    ).get(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json(user);
   } catch {
@@ -187,21 +186,24 @@ const getMe = async (req, res) => {
   }
 };
 
-const updateProfile = async (req, res) => {
+const updateProfile = (req, res) => {
   try {
     const { name, bio } = req.body;
     const avatarUrl = req.file ? `/uploads/${req.file.filename}` : undefined;
 
-    const data = {};
-    if (name) data.name = name;
-    if (bio !== undefined) data.bio = bio;
-    if (avatarUrl) data.avatarUrl = avatarUrl;
+    const fields = [];
+    const values = [];
+    if (name) { fields.push('name = ?'); values.push(name); }
+    if (bio !== undefined) { fields.push('bio = ?'); values.push(bio); }
+    if (avatarUrl) { fields.push('avatarUrl = ?'); values.push(avatarUrl); }
+    if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
 
-    const user = await prisma.user.update({
-      where: { id: req.user.id },
-      data,
-      select: { id: true, name: true, email: true, role: true, tier: true, bio: true, avatarUrl: true },
-    });
+    values.push(req.user.id);
+    db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+
+    const user = db.prepare(
+      'SELECT id, name, email, role, tier, bio, avatarUrl FROM users WHERE id = ?'
+    ).get(req.user.id);
     res.json(user);
   } catch {
     res.status(500).json({ error: 'Failed to update profile' });
@@ -211,12 +213,12 @@ const updateProfile = async (req, res) => {
 const changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
     const valid = await bcrypt.compare(currentPassword, user.passwordHash);
     if (!valid) return res.status(400).json({ error: 'Current password is incorrect' });
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
-    await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+    db.prepare('UPDATE users SET passwordHash = ? WHERE id = ?').run(passwordHash, user.id);
     res.json({ message: 'Password changed successfully' });
   } catch {
     res.status(500).json({ error: 'Failed to change password' });

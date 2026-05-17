@@ -1,32 +1,22 @@
-const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
+const { v4: uuidv4 } = require('uuid');
+const db = require('../db');
 const { sendEmail } = require('../utils/email');
-const prisma = new PrismaClient();
 
-const list = async (req, res) => {
+const list = (req, res) => {
   try {
     const { search, tier, status } = req.query;
-    const where = { role: 'member' };
-    if (tier) where.tier = tier;
-    if (status) where.status = status;
-    if (search) {
-      where.OR = [
-        { name: { contains: search } },
-        { email: { contains: search } },
-      ];
-    }
+    let query = `SELECT id, name, email, role, tier, status, bio, avatarUrl, joinedAt, lastLoginAt, stripeSubscriptionId
+                 FROM users WHERE role = 'member'`;
+    const params = [];
+    if (tier) { query += ' AND tier = ?'; params.push(tier); }
+    if (status) { query += ' AND status = ?'; params.push(status); }
+    if (search) { query += ' AND (name LIKE ? OR email LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
+    query += ' ORDER BY joinedAt DESC';
 
-    const members = await prisma.user.findMany({
-      where,
-      orderBy: { joinedAt: 'desc' },
-      select: {
-        id: true, name: true, email: true, tier: true, status: true,
-        joinedAt: true, lastLoginAt: true, avatarUrl: true, stripeSubscriptionId: true,
-      },
-    });
-
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const enriched = members.map((m) => ({
+    const members = db.prepare(query).all(...params);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const enriched = members.map(m => ({
       ...m,
       churnRisk: !m.lastLoginAt || m.lastLoginAt < sevenDaysAgo,
     }));
@@ -38,16 +28,12 @@ const list = async (req, res) => {
   }
 };
 
-const getOne = async (req, res) => {
+const getOne = (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.params.id },
-      select: {
-        id: true, name: true, email: true, role: true, tier: true, status: true,
-        bio: true, avatarUrl: true, joinedAt: true, lastLoginAt: true,
-        stripeCustomerId: true, stripeSubscriptionId: true,
-      },
-    });
+    const user = db.prepare(
+      `SELECT id, name, email, role, tier, status, bio, avatarUrl, joinedAt, lastLoginAt, stripeCustomerId, stripeSubscriptionId
+       FROM users WHERE id = ?`
+    ).get(req.params.id);
     if (!user) return res.status(404).json({ error: 'Member not found' });
     res.json(user);
   } catch {
@@ -60,15 +46,17 @@ const invite = async (req, res) => {
     const { name, email, tier = 'starter' } = req.body;
     if (!name || !email) return res.status(400).json({ error: 'Name and email required' });
 
-    const existing = await prisma.user.findUnique({ where: { email } });
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
     if (existing) return res.status(409).json({ error: 'Email already registered' });
 
     const tempPassword = Math.random().toString(36).slice(-10);
     const passwordHash = await bcrypt.hash(tempPassword, 12);
+    const id = uuidv4();
+    const now = new Date().toISOString();
 
-    const user = await prisma.user.create({
-      data: { name, email, passwordHash, tier, role: 'member' },
-    });
+    db.prepare(
+      `INSERT INTO users (id, name, email, passwordHash, tier, role, joinedAt) VALUES (?, ?, ?, ?, ?, 'member', ?)`
+    ).run(id, name, email, passwordHash, tier, now);
 
     const loginUrl = `${process.env.FRONTEND_URL}/login`;
     await sendEmail({
@@ -86,37 +74,35 @@ const invite = async (req, res) => {
       `,
     });
 
-    res.status(201).json({ message: 'Member invited', userId: user.id });
+    res.status(201).json({ message: 'Member invited', userId: id });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to invite member' });
   }
 };
 
-const updateMember = async (req, res) => {
+const updateMember = (req, res) => {
   try {
     const { tier, status } = req.body;
-    const data = {};
-    if (tier) data.tier = tier;
-    if (status) data.status = status;
+    const fields = [];
+    const values = [];
+    if (tier) { fields.push('tier = ?'); values.push(tier); }
+    if (status) { fields.push('status = ?'); values.push(status); }
+    if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
 
-    const user = await prisma.user.update({
-      where: { id: req.params.id },
-      data,
-      select: { id: true, name: true, email: true, tier: true, status: true },
-    });
+    values.push(req.params.id);
+    db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+
+    const user = db.prepare('SELECT id, name, email, tier, status FROM users WHERE id = ?').get(req.params.id);
     res.json(user);
   } catch {
     res.status(500).json({ error: 'Failed to update member' });
   }
 };
 
-const removeMember = async (req, res) => {
+const removeMember = (req, res) => {
   try {
-    await prisma.user.update({
-      where: { id: req.params.id },
-      data: { status: 'cancelled' },
-    });
+    db.prepare(`UPDATE users SET status = 'cancelled' WHERE id = ?`).run(req.params.id);
     res.json({ message: 'Member removed' });
   } catch {
     res.status(500).json({ error: 'Failed to remove member' });
@@ -126,7 +112,7 @@ const removeMember = async (req, res) => {
 const emailMember = async (req, res) => {
   try {
     const { subject, message } = req.body;
-    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+    const user = db.prepare('SELECT name, email FROM users WHERE id = ?').get(req.params.id);
     if (!user) return res.status(404).json({ error: 'Member not found' });
 
     await sendEmail({

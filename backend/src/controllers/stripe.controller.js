@@ -1,6 +1,6 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const { v4: uuidv4 } = require('uuid');
+const db = require('../db');
 
 const TIER_PRICE_MAP = {
   starter: process.env.STRIPE_PRICE_STARTER,
@@ -14,13 +14,13 @@ const createCheckoutSession = async (req, res) => {
     const priceId = TIER_PRICE_MAP[tier];
     if (!priceId) return res.status(400).json({ error: 'Invalid tier' });
 
-    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
 
     let customerId = user.stripeCustomerId;
     if (!customerId) {
       const customer = await stripe.customers.create({ email: user.email, name: user.name });
       customerId = customer.id;
-      await prisma.user.update({ where: { id: user.id }, data: { stripeCustomerId: customerId } });
+      db.prepare('UPDATE users SET stripeCustomerId = ? WHERE id = ?').run(customerId, user.id);
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -42,7 +42,7 @@ const createCheckoutSession = async (req, res) => {
 
 const createPortalSession = async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const user = db.prepare('SELECT stripeCustomerId FROM users WHERE id = ?').get(req.user.id);
     if (!user.stripeCustomerId) {
       return res.status(400).json({ error: 'No billing account found' });
     }
@@ -61,21 +61,19 @@ const createPortalSession = async (req, res) => {
 
 const getInvoices = async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const user = db.prepare('SELECT stripeCustomerId FROM users WHERE id = ?').get(req.user.id);
     if (!user.stripeCustomerId) return res.json([]);
 
     const invoices = await stripe.invoices.list({ customer: user.stripeCustomerId, limit: 24 });
-    res.json(
-      invoices.data.map((inv) => ({
-        id: inv.id,
-        amount: inv.amount_paid / 100,
-        currency: inv.currency,
-        status: inv.status,
-        date: new Date(inv.created * 1000).toISOString(),
-        pdf: inv.invoice_pdf,
-        hostedUrl: inv.hosted_invoice_url,
-      }))
-    );
+    res.json(invoices.data.map(inv => ({
+      id: inv.id,
+      amount: inv.amount_paid / 100,
+      currency: inv.currency,
+      status: inv.status,
+      date: new Date(inv.created * 1000).toISOString(),
+      pdf: inv.invoice_pdf,
+      hostedUrl: inv.hosted_invoice_url,
+    })));
   } catch {
     res.status(500).json({ error: 'Failed to fetch invoices' });
   }
@@ -114,17 +112,15 @@ const getMRR = async (req, res) => {
 const getTransactions = async (req, res) => {
   try {
     const charges = await stripe.charges.list({ limit: 50 });
-    res.json(
-      charges.data.map((c) => ({
-        id: c.id,
-        amount: c.amount / 100,
-        currency: c.currency,
-        status: c.status,
-        description: c.description,
-        email: c.billing_details?.email,
-        date: new Date(c.created * 1000).toISOString(),
-      }))
-    );
+    res.json(charges.data.map(c => ({
+      id: c.id,
+      amount: c.amount / 100,
+      currency: c.currency,
+      status: c.status,
+      description: c.description,
+      email: c.billing_details?.email,
+      date: new Date(c.created * 1000).toISOString(),
+    })));
   } catch {
     res.status(500).json({ error: 'Failed to fetch transactions' });
   }
@@ -145,41 +141,32 @@ const webhook = async (req, res) => {
         const session = event.data.object;
         const { userId, tier } = session.metadata || {};
         if (userId && tier) {
-          await prisma.user.update({
-            where: { id: userId },
-            data: {
-              tier,
-              status: 'active',
-              stripeSubscriptionId: session.subscription,
-            },
-          });
-          await prisma.notification.create({
-            data: {
-              userId,
-              message: `Your ${tier} membership is now active!`,
-              type: 'success',
-            },
-          });
+          db.prepare(
+            `UPDATE users SET tier = ?, status = 'active', stripeSubscriptionId = ? WHERE id = ?`
+          ).run(tier, session.subscription, userId);
+          db.prepare(
+            `INSERT INTO notifications (id, userId, message, type, createdAt) VALUES (?, ?, ?, 'success', ?)`
+          ).run(uuidv4(), userId, `Your ${tier} membership is now active!`, new Date().toISOString());
         }
         break;
       }
       case 'customer.subscription.updated': {
         const sub = event.data.object;
-        const user = await prisma.user.findFirst({ where: { stripeSubscriptionId: sub.id } });
+        const user = db.prepare('SELECT id FROM users WHERE stripeSubscriptionId = ?').get(sub.id);
         if (user) {
           const status = sub.status === 'active' ? 'active' : sub.status === 'canceled' ? 'cancelled' : 'inactive';
-          await prisma.user.update({ where: { id: user.id }, data: { status } });
+          db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, user.id);
         }
         break;
       }
       case 'customer.subscription.deleted': {
         const sub = event.data.object;
-        const user = await prisma.user.findFirst({ where: { stripeSubscriptionId: sub.id } });
+        const user = db.prepare('SELECT id FROM users WHERE stripeSubscriptionId = ?').get(sub.id);
         if (user) {
-          await prisma.user.update({ where: { id: user.id }, data: { status: 'cancelled' } });
-          await prisma.notification.create({
-            data: { userId: user.id, message: 'Your subscription has been cancelled.', type: 'warning' },
-          });
+          db.prepare(`UPDATE users SET status = 'cancelled' WHERE id = ?`).run(user.id);
+          db.prepare(
+            `INSERT INTO notifications (id, userId, message, type, createdAt) VALUES (?, ?, 'Your subscription has been cancelled.', 'warning', ?)`
+          ).run(uuidv4(), user.id, new Date().toISOString());
         }
         break;
       }
