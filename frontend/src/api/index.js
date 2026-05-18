@@ -1,7 +1,9 @@
 import axios from 'axios';
 
+const BASE = (import.meta.env.VITE_API_URL || '') + '/api';
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: BASE,
   // No default Content-Type — Axios sets application/json automatically for plain objects,
   // and lets the browser set multipart/form-data (with boundary) for FormData payloads.
   // A hardcoded application/json default causes Axios to JSON-stringify FormData, breaking uploads.
@@ -22,7 +24,7 @@ api.interceptors.response.use(
       try {
         const refreshToken = localStorage.getItem('refreshToken');
         if (!refreshToken) throw new Error('No refresh token');
-        const { data } = await axios.post('/api/auth/refresh', { refreshToken });
+        const { data } = await axios.post(`${BASE}/auth/refresh`, { refreshToken });
         localStorage.setItem('accessToken', data.accessToken);
         original.headers.Authorization = `Bearer ${data.accessToken}`;
         return api(original);
