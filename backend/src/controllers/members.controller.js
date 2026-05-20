@@ -7,8 +7,8 @@ const list = (req, res) => {
   try {
     const { search, tier, status } = req.query;
     let query = `SELECT id, name, email, role, tier, status, bio, avatarUrl, joinedAt, lastLoginAt, stripeSubscriptionId
-                 FROM users WHERE role = 'member'`;
-    const params = [];
+                 FROM users WHERE role = 'member' AND workspaceId = ?`;
+    const params = [req.user.workspaceId];
     if (tier) { query += ' AND tier = ?'; params.push(tier); }
     if (status) { query += ' AND status = ?'; params.push(status); }
     if (search) { query += ' AND (name LIKE ? OR email LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
@@ -32,8 +32,8 @@ const getOne = (req, res) => {
   try {
     const user = db.prepare(
       `SELECT id, name, email, role, tier, status, bio, avatarUrl, joinedAt, lastLoginAt, stripeCustomerId, stripeSubscriptionId
-       FROM users WHERE id = ?`
-    ).get(req.params.id);
+       FROM users WHERE id = ? AND workspaceId = ?`
+    ).get(req.params.id, req.user.workspaceId);
     if (!user) return res.status(404).json({ error: 'Member not found' });
     res.json(user);
   } catch {
@@ -55,8 +55,8 @@ const invite = async (req, res) => {
     const now = new Date().toISOString();
 
     db.prepare(
-      `INSERT INTO users (id, name, email, passwordHash, tier, role, joinedAt) VALUES (?, ?, ?, ?, ?, 'member', ?)`
-    ).run(id, name, email, passwordHash, tier, now);
+      `INSERT INTO users (id, name, email, passwordHash, tier, role, workspaceId, joinedAt) VALUES (?, ?, ?, ?, ?, 'member', ?, ?)`
+    ).run(id, name, email, passwordHash, tier, req.user.workspaceId, now);
 
     const loginUrl = `${process.env.FRONTEND_URL}/login`;
     await sendEmail({
@@ -90,10 +90,11 @@ const updateMember = (req, res) => {
     if (status) { fields.push('status = ?'); values.push(status); }
     if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
 
-    values.push(req.params.id);
-    db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    values.push(req.params.id, req.user.workspaceId);
+    db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ? AND workspaceId = ?`).run(...values);
 
-    const user = db.prepare('SELECT id, name, email, tier, status FROM users WHERE id = ?').get(req.params.id);
+    const user = db.prepare('SELECT id, name, email, tier, status FROM users WHERE id = ? AND workspaceId = ?').get(req.params.id, req.user.workspaceId);
+    if (!user) return res.status(404).json({ error: 'Member not found' });
     res.json(user);
   } catch {
     res.status(500).json({ error: 'Failed to update member' });
@@ -102,7 +103,7 @@ const updateMember = (req, res) => {
 
 const removeMember = (req, res) => {
   try {
-    db.prepare(`UPDATE users SET status = 'cancelled' WHERE id = ?`).run(req.params.id);
+    db.prepare(`UPDATE users SET status = 'cancelled' WHERE id = ? AND workspaceId = ?`).run(req.params.id, req.user.workspaceId);
     res.json({ message: 'Member removed' });
   } catch {
     res.status(500).json({ error: 'Failed to remove member' });
@@ -112,7 +113,7 @@ const removeMember = (req, res) => {
 const emailMember = async (req, res) => {
   try {
     const { subject, message } = req.body;
-    const user = db.prepare('SELECT name, email FROM users WHERE id = ?').get(req.params.id);
+    const user = db.prepare('SELECT name, email FROM users WHERE id = ? AND workspaceId = ?').get(req.params.id, req.user.workspaceId);
     if (!user) return res.status(404).json({ error: 'Member not found' });
 
     await sendEmail({

@@ -4,6 +4,10 @@ import { authApi } from '../../api';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
 
+const copyToClipboard = (text) => {
+  navigator.clipboard.writeText(text).then(() => toast.success('Link copied!')).catch(() => toast.error('Copy failed'));
+};
+
 export default function SettingsPage() {
   const { user, updateUser } = useAuth();
   const fileRef = useRef(null);
@@ -176,6 +180,25 @@ export default function SettingsPage() {
             </button>
           </div>
         </form>
+      </div>
+
+      <div className="card">
+        <h2 className="text-base font-semibold text-cream mb-1">Member Signup Link</h2>
+        <p className="text-sm text-muted mb-4">Share this link so members can sign up directly into your workspace.</p>
+        <div className="flex gap-2">
+          <input
+            className="input flex-1 text-sm font-mono"
+            readOnly
+            value={`${window.location.origin}/signup?workspace=${user?.id}`}
+          />
+          <button
+            type="button"
+            className="btn-secondary text-sm"
+            onClick={() => copyToClipboard(`${window.location.origin}/signup?workspace=${user?.id}`)}
+          >
+            Copy
+          </button>
+        </div>
       </div>
 
       <div className="card">

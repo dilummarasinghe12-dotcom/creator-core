@@ -4,17 +4,18 @@ const TIER_PRICES = { starter: 9, member: 29, vip: 99 };
 
 const getDashboard = (req, res) => {
   try {
+    const wsId = req.user.workspaceId;
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-    const totalMembers = db.prepare(`SELECT COUNT(*) as c FROM users WHERE role = 'member'`).get().c;
-    const newThisMonth = db.prepare(`SELECT COUNT(*) as c FROM users WHERE role = 'member' AND joinedAt >= ?`).get(startOfMonth).c;
-    const activeMembers = db.prepare(`SELECT COUNT(*) as c FROM users WHERE role = 'member' AND status = 'active'`).get().c;
-    const cancelledMembers = db.prepare(`SELECT COUNT(*) as c FROM users WHERE role = 'member' AND status = 'cancelled'`).get().c;
+    const totalMembers = db.prepare(`SELECT COUNT(*) as c FROM users WHERE role = 'member' AND workspaceId = ?`).get(wsId).c;
+    const newThisMonth = db.prepare(`SELECT COUNT(*) as c FROM users WHERE role = 'member' AND workspaceId = ? AND joinedAt >= ?`).get(wsId, startOfMonth).c;
+    const activeMembers = db.prepare(`SELECT COUNT(*) as c FROM users WHERE role = 'member' AND workspaceId = ? AND status = 'active'`).get(wsId).c;
+    const cancelledMembers = db.prepare(`SELECT COUNT(*) as c FROM users WHERE role = 'member' AND workspaceId = ? AND status = 'cancelled'`).get(wsId).c;
 
     const tierCounts = db.prepare(
-      `SELECT tier, COUNT(*) as count FROM users WHERE role = 'member' AND status = 'active' GROUP BY tier`
-    ).all();
+      `SELECT tier, COUNT(*) as count FROM users WHERE role = 'member' AND workspaceId = ? AND status = 'active' GROUP BY tier`
+    ).all(wsId);
 
     const mrr = tierCounts.reduce((sum, g) => sum + (TIER_PRICES[g.tier] || 0) * g.count, 0);
     const churnRate = totalMembers > 0 ? Math.round((cancelledMembers / totalMembers) * 100) : 0;
@@ -24,8 +25,8 @@ const getDashboard = (req, res) => {
       const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
       const count = db.prepare(
-        `SELECT COUNT(*) as c FROM users WHERE role = 'member' AND joinedAt >= ? AND joinedAt < ?`
-      ).get(start.toISOString(), end.toISOString()).c;
+        `SELECT COUNT(*) as c FROM users WHERE role = 'member' AND workspaceId = ? AND joinedAt >= ? AND joinedAt < ?`
+      ).get(wsId, start.toISOString(), end.toISOString()).c;
       monthlyGrowth.push({ month: start.toLocaleString('default', { month: 'short' }), members: count });
     }
 
@@ -36,8 +37,8 @@ const getDashboard = (req, res) => {
     }));
 
     const recentMembers = db.prepare(
-      `SELECT id, name, email, tier, joinedAt, avatarUrl FROM users WHERE role = 'member' ORDER BY joinedAt DESC LIMIT 5`
-    ).all();
+      `SELECT id, name, email, tier, joinedAt, avatarUrl FROM users WHERE role = 'member' AND workspaceId = ? ORDER BY joinedAt DESC LIMIT 5`
+    ).all(wsId);
 
     res.json({ totalMembers, newThisMonth, activeMembers, mrr, churnRate, monthlyGrowth, revenueByTier, recentMembers });
   } catch (err) {

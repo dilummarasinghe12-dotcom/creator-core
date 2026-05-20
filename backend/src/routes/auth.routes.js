@@ -4,6 +4,7 @@ const { upload } = require('../middleware/upload.middleware');
 const ctrl = require('../controllers/auth.controller');
 
 router.post('/register', ctrl.register);
+router.post('/register-admin', ctrl.registerAdmin);
 router.post('/login', ctrl.login);
 router.post('/refresh', ctrl.refresh);
 router.post('/logout', ctrl.logout);

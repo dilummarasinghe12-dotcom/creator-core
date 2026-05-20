@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import LandingPage from '../pages/public/LandingPage';
 import LoginPage from '../pages/public/LoginPage';
 import SignupPage from '../pages/public/SignupPage';
+import AdminSignupPage from '../pages/public/AdminSignupPage';
 import ForgotPasswordPage from '../pages/public/ForgotPasswordPage';
 import ResetPasswordPage from '../pages/public/ResetPasswordPage';
 
@@ -49,6 +50,7 @@ export default function AppRouter() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<GuestRoute><LoginPage /></GuestRoute>} />
         <Route path="/signup" element={<GuestRoute><SignupPage /></GuestRoute>} />
+        <Route path="/admin-signup" element={<GuestRoute><AdminSignupPage /></GuestRoute>} />
         <Route path="/forgot-password" element={<GuestRoute><ForgotPasswordPage /></GuestRoute>} />
         <Route path="/reset-password" element={<GuestRoute><ResetPasswordPage /></GuestRoute>} />
 

@@ -11,8 +11,8 @@ const list = (req, res) => {
     const { type, published } = req.query;
     const isAdmin = req.user.role === 'admin';
 
-    let query = `SELECT p.*, u.name as creatorName FROM products p LEFT JOIN users u ON p.createdBy = u.id WHERE 1=1`;
-    const params = [];
+    let query = `SELECT p.*, u.name as creatorName FROM products p LEFT JOIN users u ON p.createdBy = u.id WHERE p.workspaceId = ?`;
+    const params = [req.user.workspaceId];
     if (type) { query += ' AND p.type = ?'; params.push(type); }
     if (isAdmin) {
       if (published !== undefined) { query += ' AND p.published = ?'; params.push(published === 'true' ? 1 : 0); }
@@ -44,7 +44,7 @@ const list = (req, res) => {
 
 const getOne = (req, res) => {
   try {
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    const product = db.prepare('SELECT * FROM products WHERE id = ? AND workspaceId = ?').get(req.params.id, req.user.workspaceId);
     if (!product) return res.status(404).json({ error: 'Product not found' });
     if (!product.published && req.user.role !== 'admin') {
       return res.status(404).json({ error: 'Product not found' });
@@ -55,8 +55,8 @@ const getOne = (req, res) => {
 
     db.prepare('UPDATE products SET viewCount = viewCount + 1 WHERE id = ?').run(product.id);
     db.prepare(
-      `INSERT INTO analytics (id, eventType, userId, productId, createdAt) VALUES (?, 'view', ?, ?, ?)`
-    ).run(uuidv4(), req.user.id, product.id, new Date().toISOString());
+      `INSERT INTO analytics (id, eventType, userId, productId, workspaceId, createdAt) VALUES (?, 'view', ?, ?, ?, ?)`
+    ).run(uuidv4(), req.user.id, product.id, req.user.workspaceId, new Date().toISOString());
 
     res.json({ ...product, published: !!product.published });
   } catch {
@@ -75,9 +75,9 @@ const create = (req, res) => {
     const now = new Date().toISOString();
 
     db.prepare(
-      `INSERT INTO products (id, title, description, type, tierAccess, fileUrl, thumbnailUrl, emoji, duration, published, createdBy, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
-    ).run(id, title, description || null, type, tierAccess || 'starter', fileUrl, thumbnailUrl, emoji || null, duration || null, req.user.id, now, now);
+      `INSERT INTO products (id, title, description, type, tierAccess, fileUrl, thumbnailUrl, emoji, duration, published, createdBy, workspaceId, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
+    ).run(id, title, description || null, type, tierAccess || 'starter', fileUrl, thumbnailUrl, emoji || null, duration || null, req.user.id, req.user.workspaceId, now, now);
 
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     res.status(201).json({ ...product, published: !!product.published });
@@ -89,7 +89,7 @@ const create = (req, res) => {
 
 const update = (req, res) => {
   try {
-    const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    const existing = db.prepare('SELECT * FROM products WHERE id = ? AND workspaceId = ?').get(req.params.id, req.user.workspaceId);
     if (!existing) return res.status(404).json({ error: 'Product not found' });
 
     const { title, description, type, tierAccess, emoji, duration, published } = req.body;
@@ -103,7 +103,7 @@ const update = (req, res) => {
     db.prepare(`UPDATE products SET
       title = ?, description = ?, type = ?, tierAccess = ?, emoji = ?, duration = ?,
       published = ?, fileUrl = ?, thumbnailUrl = ?, updatedAt = ?
-      WHERE id = ?`).run(
+      WHERE id = ? AND workspaceId = ?`).run(
       title ?? existing.title,
       description ?? existing.description,
       type ?? existing.type,
@@ -114,7 +114,8 @@ const update = (req, res) => {
       fileUrl,
       thumbnailUrl,
       new Date().toISOString(),
-      req.params.id
+      req.params.id,
+      req.user.workspaceId
     );
 
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
@@ -126,6 +127,9 @@ const update = (req, res) => {
 
 const remove = (req, res) => {
   try {
+    const existing = db.prepare('SELECT id FROM products WHERE id = ? AND workspaceId = ?').get(req.params.id, req.user.workspaceId);
+    if (!existing) return res.status(404).json({ error: 'Product not found' });
+
     db.prepare('DELETE FROM analytics WHERE productId = ?').run(req.params.id);
     db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
     res.json({ message: 'Product deleted' });
@@ -136,10 +140,13 @@ const remove = (req, res) => {
 
 const trackDownload = (req, res) => {
   try {
+    const product = db.prepare('SELECT id FROM products WHERE id = ? AND workspaceId = ?').get(req.params.id, req.user.workspaceId);
+    if (!product) return res.status(404).json({ error: 'Product not found' });
+
     db.prepare('UPDATE products SET downloadCount = downloadCount + 1 WHERE id = ?').run(req.params.id);
     db.prepare(
-      `INSERT INTO analytics (id, eventType, userId, productId, createdAt) VALUES (?, 'download', ?, ?, ?)`
-    ).run(uuidv4(), req.user.id, req.params.id, new Date().toISOString());
+      `INSERT INTO analytics (id, eventType, userId, productId, workspaceId, createdAt) VALUES (?, 'download', ?, ?, ?, ?)`
+    ).run(uuidv4(), req.user.id, req.params.id, req.user.workspaceId, new Date().toISOString());
     res.json({ ok: true });
   } catch {
     res.status(500).json({ error: 'Failed to track download' });

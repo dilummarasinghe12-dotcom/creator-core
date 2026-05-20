@@ -43,6 +43,7 @@ export default api;
 // Auth
 export const authApi = {
   register: (data) => api.post('/auth/register', data),
+  registerAdmin: (data) => api.post('/auth/register-admin', data),
   login: (data) => api.post('/auth/login', data),
   logout: (refreshToken) => api.post('/auth/logout', { refreshToken }),
   forgotPassword: (email) => api.post('/auth/forgot-password', { email }),

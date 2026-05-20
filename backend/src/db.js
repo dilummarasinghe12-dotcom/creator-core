@@ -101,4 +101,19 @@ db.exec(`
   );
 `);
 
+// Runtime migrations: add workspaceId columns to support multi-tenancy
+const ensureColumn = (table, col, type) => {
+  const cols = db.pragma(`table_info(${table})`);
+  if (!cols.find(c => c.name === col)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+  }
+};
+ensureColumn('users', 'workspaceId', 'TEXT');
+ensureColumn('products', 'workspaceId', 'TEXT');
+ensureColumn('live_sessions', 'workspaceId', 'TEXT');
+ensureColumn('analytics', 'workspaceId', 'TEXT');
+
+// Backfill: admin users that existed before multi-tenancy get workspaceId = their own id
+db.exec(`UPDATE users SET workspaceId = id WHERE role = 'admin' AND workspaceId IS NULL`);
+
 module.exports = db;

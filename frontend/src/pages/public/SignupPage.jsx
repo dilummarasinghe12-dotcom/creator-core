@@ -13,6 +13,7 @@ const tiers = [
 export default function SignupPage() {
   const { register } = useAuth();
   const [params] = useSearchParams();
+  const workspaceId = params.get('workspace');
   const [form, setForm] = useState({ name: '', email: '', password: '', tier: params.get('tier') || 'member' });
   const [loading, setLoading] = useState(false);
 
@@ -21,7 +22,7 @@ export default function SignupPage() {
     if (form.password.length < 8) return toast.error('Password must be at least 8 characters');
     setLoading(true);
     try {
-      await register({ name: form.name, email: form.email, password: form.password, tier: form.tier });
+      await register({ name: form.name, email: form.email, password: form.password, tier: form.tier, workspaceId });
       // Redirect to Stripe checkout
       const { data } = await stripeApi.checkout(form.tier);
       window.location.href = data.url;

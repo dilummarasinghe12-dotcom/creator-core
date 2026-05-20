@@ -7,8 +7,8 @@ const TIER_ORDER = { free: 0, starter: 1, member: 2, vip: 3 };
 const list = (req, res) => {
   try {
     const { status } = req.query;
-    let query = `SELECT ls.*, u.name as creatorName FROM live_sessions ls LEFT JOIN users u ON ls.createdBy = u.id WHERE 1=1`;
-    const params = [];
+    let query = `SELECT ls.*, u.name as creatorName FROM live_sessions ls LEFT JOIN users u ON ls.createdBy = u.id WHERE ls.workspaceId = ?`;
+    const params = [req.user.workspaceId];
     if (status) { query += ' AND ls.status = ?'; params.push(status); }
     query += ' ORDER BY ls.createdAt DESC';
 
@@ -40,9 +40,9 @@ const create = (req, res) => {
     const id = uuidv4();
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO live_sessions (id, title, description, tierAccess, scheduledAt, createdBy, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, title, description || null, tierAccess || 'starter', scheduledAt || null, req.user.id, now);
+      `INSERT INTO live_sessions (id, title, description, tierAccess, scheduledAt, createdBy, workspaceId, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, title, description || null, tierAccess || 'starter', scheduledAt || null, req.user.id, req.user.workspaceId, now);
 
     const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(id);
     res.status(201).json(session);
@@ -53,15 +53,18 @@ const create = (req, res) => {
 
 const startSession = (req, res) => {
   try {
+    const session = db.prepare('SELECT title, workspaceId FROM live_sessions WHERE id = ?').get(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (session.workspaceId !== req.user.workspaceId) return res.status(403).json({ error: 'Forbidden' });
+
     const now = new Date().toISOString();
     db.prepare(`UPDATE live_sessions SET status = 'live', startedAt = ? WHERE id = ?`).run(now, req.params.id);
 
-    const session = db.prepare('SELECT title FROM live_sessions WHERE id = ?').get(req.params.id);
-    const members = db.prepare(`SELECT id FROM users WHERE role = 'member' AND status = 'active'`).all();
+    const members = db.prepare(`SELECT id FROM users WHERE role = 'member' AND status = 'active' AND workspaceId = ?`).all(req.user.workspaceId);
     for (const m of members) {
       db.prepare(
         `INSERT INTO notifications (id, userId, message, type, createdAt) VALUES (?, ?, ?, 'info', ?)`
-      ).run(uuidv4(), m.id, `🔴 Live session started: "${session?.title}"`, now);
+      ).run(uuidv4(), m.id, `Live session started: "${session.title}"`, now);
     }
 
     emitToAll('live:started', { sessionId: req.params.id });
@@ -74,6 +77,10 @@ const startSession = (req, res) => {
 
 const endSession = (req, res) => {
   try {
+    const session = db.prepare('SELECT workspaceId FROM live_sessions WHERE id = ?').get(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (session.workspaceId !== req.user.workspaceId) return res.status(403).json({ error: 'Forbidden' });
+
     const { recordingUrl } = req.body;
     const now = new Date().toISOString();
     db.prepare(
@@ -81,8 +88,8 @@ const endSession = (req, res) => {
     ).run(now, recordingUrl || null, req.params.id);
 
     emitToAll('live:ended', { sessionId: req.params.id });
-    const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(req.params.id);
-    res.json(session);
+    const updated = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(req.params.id);
+    res.json(updated);
   } catch {
     res.status(500).json({ error: 'Failed to end session' });
   }
@@ -90,10 +97,10 @@ const endSession = (req, res) => {
 
 const update = (req, res) => {
   try {
-    const { title, description, tierAccess, scheduledAt, recordingUrl } = req.body;
-    const existing = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(req.params.id);
+    const existing = db.prepare('SELECT * FROM live_sessions WHERE id = ? AND workspaceId = ?').get(req.params.id, req.user.workspaceId);
     if (!existing) return res.status(404).json({ error: 'Session not found' });
 
+    const { title, description, tierAccess, scheduledAt, recordingUrl } = req.body;
     db.prepare(`UPDATE live_sessions SET title = ?, description = ?, tierAccess = ?, scheduledAt = ?, recordingUrl = ? WHERE id = ?`).run(
       title ?? existing.title,
       description ?? existing.description,
@@ -112,6 +119,9 @@ const update = (req, res) => {
 
 const remove = (req, res) => {
   try {
+    const existing = db.prepare('SELECT id FROM live_sessions WHERE id = ? AND workspaceId = ?').get(req.params.id, req.user.workspaceId);
+    if (!existing) return res.status(404).json({ error: 'Session not found' });
+
     db.prepare('DELETE FROM live_sessions WHERE id = ?').run(req.params.id);
     res.json({ message: 'Session deleted' });
   } catch {

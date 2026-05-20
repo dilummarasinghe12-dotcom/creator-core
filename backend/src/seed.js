@@ -9,10 +9,11 @@ async function seedAdmin() {
   }
 
   const passwordHash = await bcrypt.hash('Admin1234!', 12);
+  const userId = uuidv4();
   db.prepare(
-    `INSERT INTO users (id, name, email, passwordHash, role, tier, status, joinedAt)
-     VALUES (?, 'Creator Core Admin', 'admin@creatorcore.io', ?, 'admin', 'vip', 'active', datetime('now'))`
-  ).run(uuidv4(), passwordHash);
+    `INSERT INTO users (id, name, email, passwordHash, role, tier, status, workspaceId, joinedAt)
+     VALUES (?, 'Creator Core Admin', 'admin@creatorcore.io', ?, 'admin', 'vip', 'active', ?, datetime('now'))`
+  ).run(userId, passwordHash, userId);
 
   return { created: true, message: 'Admin created: admin@creatorcore.io / Admin1234!' };
 }

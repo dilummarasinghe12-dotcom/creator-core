@@ -52,6 +52,10 @@ export default function LoginPage() {
           Don't have an account?{' '}
           <Link to="/signup" className="text-accent hover:text-accent-hover font-medium">Join now</Link>
         </p>
+        <p className="text-center text-sm text-muted mt-2">
+          Creator?{' '}
+          <Link to="/admin-signup" className="text-accent hover:text-accent-hover font-medium">Start your own space</Link>
+        </p>
       </div>
     </div>
   );

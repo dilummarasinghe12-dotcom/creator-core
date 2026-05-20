@@ -7,7 +7,7 @@ const { sendEmail, passwordResetEmail, welcomeEmail } = require('../utils/email'
 
 const register = async (req, res) => {
   try {
-    const { name, email, password, tier = 'starter' } = req.body;
+    const { name, email, password, tier = 'starter', workspaceId = null } = req.body;
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email and password are required' });
     }
@@ -20,18 +20,18 @@ const register = async (req, res) => {
     const now = new Date().toISOString();
 
     db.prepare(
-      `INSERT INTO users (id, name, email, passwordHash, tier, role, joinedAt) VALUES (?, ?, ?, ?, ?, 'member', ?)`
-    ).run(userId, name, email, passwordHash, tier, now);
+      `INSERT INTO users (id, name, email, passwordHash, tier, role, workspaceId, joinedAt) VALUES (?, ?, ?, ?, ?, 'member', ?, ?)`
+    ).run(userId, name, email, passwordHash, tier, workspaceId, now);
 
     db.prepare(
-      `INSERT INTO analytics (id, eventType, userId, createdAt) VALUES (?, 'signup', ?, ?)`
-    ).run(uuidv4(), userId, now);
+      `INSERT INTO analytics (id, eventType, userId, workspaceId, createdAt) VALUES (?, 'signup', ?, ?, ?)`
+    ).run(uuidv4(), userId, workspaceId, now);
 
     db.prepare(
       `INSERT INTO notifications (id, userId, message, type, createdAt) VALUES (?, ?, ?, 'success', ?)`
     ).run(uuidv4(), userId, `Welcome to Creator Core! Your ${tier} membership is active.`, now);
 
-    const accessToken = signAccess({ id: userId, role: 'member', tier });
+    const accessToken = signAccess({ id: userId, role: 'member', tier, workspaceId });
     const refreshToken = signRefresh({ id: userId });
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     db.prepare(
@@ -45,10 +45,54 @@ const register = async (req, res) => {
     res.status(201).json({
       accessToken,
       refreshToken,
-      user: { id: userId, name, email, role: 'member', tier },
+      user: { id: userId, name, email, role: 'member', tier, workspaceId },
     });
   } catch (err) {
     console.error('register error:', err);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+};
+
+const registerAdmin = async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email and password are required' });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (existing) return res.status(409).json({ error: 'Email already registered' });
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const userId = uuidv4();
+    const now = new Date().toISOString();
+
+    // For admins, workspaceId = their own id — they ARE the workspace
+    db.prepare(
+      `INSERT INTO users (id, name, email, passwordHash, tier, role, workspaceId, joinedAt) VALUES (?, ?, ?, ?, 'vip', 'admin', ?, ?)`
+    ).run(userId, name, email, passwordHash, userId, now);
+
+    const accessToken = signAccess({ id: userId, role: 'admin', tier: 'vip', workspaceId: userId });
+    const refreshToken = signRefresh({ id: userId });
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare(
+      `INSERT INTO refresh_tokens (id, token, userId, expiresAt, createdAt) VALUES (?, ?, ?, ?, ?)`
+    ).run(uuidv4(), refreshToken, userId, expiresAt, now);
+
+    try {
+      await sendEmail({ to: email, subject: 'Welcome to Creator Core', html: welcomeEmail(name, 'admin') });
+    } catch {}
+
+    res.status(201).json({
+      accessToken,
+      refreshToken,
+      user: { id: userId, name, email, role: 'admin', tier: 'vip', workspaceId: userId },
+    });
+  } catch (err) {
+    console.error('registerAdmin error:', err);
     res.status(500).json({ error: 'Registration failed' });
   }
 };
@@ -69,12 +113,13 @@ const login = async (req, res) => {
     }
 
     const now = new Date().toISOString();
+    const workspaceId = user.role === 'admin' ? user.id : user.workspaceId;
     db.prepare('UPDATE users SET lastLoginAt = ? WHERE id = ?').run(now, user.id);
     db.prepare(
-      `INSERT INTO analytics (id, eventType, userId, createdAt) VALUES (?, 'login', ?, ?)`
-    ).run(uuidv4(), user.id, now);
+      `INSERT INTO analytics (id, eventType, userId, workspaceId, createdAt) VALUES (?, 'login', ?, ?, ?)`
+    ).run(uuidv4(), user.id, workspaceId, now);
 
-    const accessToken = signAccess({ id: user.id, role: user.role, tier: user.tier });
+    const accessToken = signAccess({ id: user.id, role: user.role, tier: user.tier, workspaceId });
     const refreshToken = signRefresh({ id: user.id });
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     db.prepare(
@@ -84,7 +129,7 @@ const login = async (req, res) => {
     res.json({
       accessToken,
       refreshToken,
-      user: { id: user.id, name: user.name, email: user.email, role: user.role, tier: user.tier, avatarUrl: user.avatarUrl },
+      user: { id: user.id, name: user.name, email: user.email, role: user.role, tier: user.tier, avatarUrl: user.avatarUrl, workspaceId },
     });
   } catch (err) {
     console.error('login error:', err);
@@ -109,10 +154,11 @@ const refresh = (req, res) => {
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
 
-    const user = db.prepare('SELECT id, role, tier FROM users WHERE id = ?').get(payload.id);
+    const user = db.prepare('SELECT id, role, tier, workspaceId FROM users WHERE id = ?').get(payload.id);
     if (!user) return res.status(401).json({ error: 'User not found' });
 
-    const accessToken = signAccess({ id: user.id, role: user.role, tier: user.tier });
+    const workspaceId = user.role === 'admin' ? user.id : user.workspaceId;
+    const accessToken = signAccess({ id: user.id, role: user.role, tier: user.tier, workspaceId });
     res.json({ accessToken });
   } catch {
     res.status(401).json({ error: 'Invalid refresh token' });
@@ -225,4 +271,4 @@ const changePassword = async (req, res) => {
   }
 };
 
-module.exports = { register, login, refresh, logout, forgotPassword, resetPassword, getMe, updateProfile, changePassword };
+module.exports = { register, registerAdmin, login, refresh, logout, forgotPassword, resetPassword, getMe, updateProfile, changePassword };
